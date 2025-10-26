@@ -62,13 +62,15 @@ nu11secur1ty:
 ```bash
 echo AUTH > permission.txt && python http_desync_scanner.py --target your_domain.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --concurrency 2 --timeout 10
 ```
-```
-python .\burp-http-desync-scanner.py --target mheducation.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --concurrency 2 --timeout 10
-```
+
 - Burp
 ```
 python .\burp-http-desync-scanner.py --target your_domain.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --concurrency 2 --timeout 10 --proxy 127.0.0.1:8080
 ```
+```
+python .\burp-http-desync-scanner.py --target mheducation.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --concurrency 2 --timeout 10
+```
+---
 
 Dry-run (show templates only):
 ```bash
