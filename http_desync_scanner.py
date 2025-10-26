@@ -1,6 +1,6 @@
 #!/usr/bin/python
 """
-HTTP Desync (Request Smuggling) Scanner - upgraded + advanced payloads
+HTTP Desync (Request Smuggling) Scanner - upgraded + advanced payloads + Burp-like HTML report
 by nu11secur1ty 2025 (patched)
 
 Notes:
@@ -8,6 +8,7 @@ Notes:
   folded headers, Expect:100, pipelined requests, HTTP/1.0, absolute-URI, etc.)
 - Supports --proxy (host:port). For HTTPS target with proxy the script uses CONNECT then TLS.
 - Safety: requires --auth-file containing the word 'AUTH' (unless you add an explicit bypass).
+- HTML report now includes Burp-like collapsible request/response panels and "Copy Request" buttons.
 """
 from __future__ import annotations
 import argparse
@@ -343,7 +344,7 @@ def payload_expect_100_continue_variants(host: str, path: str = "/") -> List[Tup
     lines2 = [
         f"POST {path} HTTP/1.1",
         f"Host: {host}",
-        "User-Agent: DesyncScanner/1.4",
+        "User-Agent: {DEFAULT_USER_AGENT}",
         "Expect: 100-continue",
         "Transfer-Encoding: chunked",
         "Content-Length: 4",
@@ -611,7 +612,7 @@ def analyze_response(template_name: str, sent: bytes, resp_bytes: bytes, indicat
 
 
 # -----------------------
-# HTML report generator (color-coded)
+# HTML report generator (Burp-like light theme)
 # -----------------------
 def severity_badge_html(sev: str) -> str:
     if sev == 'red':
@@ -623,27 +624,70 @@ def severity_badge_html(sev: str) -> str:
     return f'<span style="display:inline-block;padding:6px 10px;border-radius:6px;background:{color};color:{textcol};font-weight:700;">{sev.upper()}</span>'
 
 
+def extract_request_meta(req_text: str) -> Tuple[str, str]:
+    """Return (method, path) from request start-line, fallback to blanks."""
+    try:
+        first = req_text.splitlines()[0]
+        parts = first.split(" ", 2)
+        if len(parts) >= 2:
+            return parts[0], parts[1]
+        return first, ""
+    except Exception:
+        return "", ""
+
+
 def generate_html_report(report: Dict, html_path: str) -> None:
-    counts = {'red':0,'yellow':0,'green':0}
+    counts = {'red': 0, 'yellow': 0, 'green': 0}
     for r in report.get('results', []):
-        sev = r.get('severity','green')
-        counts[sev] = counts.get(sev,0) + 1
+        sev = r.get('severity', 'green')
+        counts[sev] = counts.get(sev, 0) + 1
 
     rows = []
+    idx = 0
     for r in report.get('results', []):
-        sev = r.get('severity','green')
+        idx += 1
+        sev = r.get('severity', 'green')
         badge = severity_badge_html(sev)
         reasons = ', '.join(r.get('reasons', [])) or 'None'
-        preview = html.escape(r.get('resp_preview',''))
-        border = '#b22222' if sev=='red' else ('#f39c12' if sev=='yellow' else '#27ae60')
+        resp_preview = r.get('resp_preview', '')
+        # include full response if available; prefer full_response else resp_preview
+        full_resp = r.get('response_full', resp_preview)
+        req_sent = r.get('request_sent', '')
+        method, path = extract_request_meta(req_sent or "")
+        status_line = ""
+        if full_resp:
+            status_line = full_resp.splitlines()[0] if full_resp.splitlines() else ""
+        border = '#b22222' if sev == 'red' else ('#f39c12' if sev == 'yellow' else '#27ae60')
+
         row = f"""
-        <div style="border:1px solid #e6e9ee;border-left:6px solid {border};border-radius:8px;padding:12px;margin:8px 0;background:#fff;">
-          <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;font-size:16px;font-weight:700;">Template: {html.escape(str(r.get('template')))}</div>
-            <div>{badge}</div>
+        <div class="req-card" style="border:1px solid #e6e9ee;border-left:6px solid {border};border-radius:8px;padding:12px;margin:8px 0;background:#fff;">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+            <div style="font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;">
+              <span style="background:#eef2f7;padding:6px 10px;border-radius:6px;margin-right:8px;font-weight:700;color:#0b1220">{html.escape(method or '')}</span>
+              <span style="font-weight:600;color:#334">{html.escape(path or '')}</span>
+              <span style="color:#666;font-weight:400;margin-left:8px;font-size:12px;">{html.escape(status_line)}</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;">
+              <div style="font-size:12px;color:#666;margin-right:8px">Severity</div>
+              <div>{badge}</div>
+              <button onclick="togglePanel('panel-{idx}')" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer">Toggle</button>
+              <button onclick="copyToClipboard('req-{idx}')" style="padding:6px 10px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer">Copy Request</button>
+            </div>
           </div>
-          <div style="margin-top:8px;color:#333;font-family:monospace;white-space:pre-wrap;max-height:240px;overflow:auto;border-top:1px dashed #eee;padding-top:8px;">{preview}</div>
-          <div style="margin-top:8px;color:#666;font-size:13px;">Reasons: {html.escape(reasons)} | Response length: {r.get('resp_len')}</div>
+
+          <div id="panel-{idx}" style="margin-top:10px;display:none;">
+            <div style="display:flex;gap:12px;">
+              <div style="flex:1">
+                <div style="font-weight:700;margin-bottom:6px;color:#333">Request (raw)</div>
+                <pre id="req-{idx}" style="background:#0f1720;color:#e6eef6;padding:12px;border-radius:6px;overflow:auto;white-space:pre-wrap;font-family:monospace;">{html.escape(req_sent or '')}</pre>
+              </div>
+              <div style="flex:1">
+                <div style="font-weight:700;margin-bottom:6px;color:#333">Response (preview)</div>
+                <pre style="background:#f7f8fa;color:#0b1220;padding:12px;border-radius:6px;overflow:auto;white-space:pre-wrap;font-family:monospace;">{html.escape(full_resp or '')}</pre>
+              </div>
+            </div>
+            <div style="margin-top:8px;color:#666;font-size:13px;">Reasons: {html.escape(reasons)} | Response length: {r.get('resp_len')}</div>
+          </div>
         </div>
         """
         rows.append(row)
@@ -654,17 +698,61 @@ def generate_html_report(report: Dict, html_path: str) -> None:
   <meta charset="utf-8" />
   <title>HTTP Desync Scanner Report - {html.escape(report.get('target',''))}</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <style>body{{background:#f6f8fa;padding:24px;font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;color:#0b1220}} .card{{background:#fff;padding:12px;border-radius:8px}}</style>
+  <style>
+    body {{background:#f6f8fa;padding:20px;font-family:Inter,Segoe UI,Arial,Helvetica,sans-serif;color:#0b1220}}
+    .header {{display:flex;justify-content:space-between;align-items:center;gap:16px}}
+    .card {{background:#fff;border-radius:12px;padding:16px;box-shadow:0 4px 16px rgba(11,17,32,0.04);}}
+    .summary-item {{display:inline-block;padding:10px 12px;border-radius:8px;margin-right:8px;font-weight:700}}
+    pre {{font-size:13px;line-height:1.2}}
+    button {{font-size:13px}}
+  </style>
 </head>
 <body>
-  <div class="card">
-    <h2 style="margin:0 0 8px 0">HTTP Desync Scanner Report</h2>
-    <div style="color:#556">Target: {html.escape(report.get('target',''))}:{report.get('port')} Path: {html.escape(report.get('path','/'))} Generated: {html.escape(time.ctime(report.get('timestamp', time.time())))}</div>
-    <div style="margin-top:10px">RED=HIGH: {counts['red']} &nbsp; YELLOW=MEDIUM: {counts['yellow']} &nbsp; GREEN=LOW: {counts['green']}</div>
+  <div class="card header" style="margin-bottom:12px;">
+    <div>
+      <h2 style="margin:0 0 6px 0">HTTP Desync Scanner Report</h2>
+      <div style="color:#556">Target: {html.escape(report.get('target',''))}:{report.get('port')}  Path: {html.escape(report.get('path','/'))}  Generated: {html.escape(time.ctime(report.get('timestamp', time.time())))}</div>
+    </div>
+    <div style="text-align:right">
+      <div style="font-size:12px;color:#666;margin-bottom:6px">Severity summary</div>
+      <div>
+        <span class="summary-item" style="background:#fdecea;color:#a61e14">RED: {counts['red']}</span>
+        <span class="summary-item" style="background:#fff6e0;color:#8a6d00">YELLOW: {counts['yellow']}</span>
+        <span class="summary-item" style="background:#eafaf1;color:#086f39">GREEN: {counts['green']}</span>
+      </div>
+    </div>
   </div>
-  <div style="margin-top:18px">
+
+  <div>
     {''.join(rows)}
   </div>
+
+  <script>
+    function togglePanel(id) {{
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.style.display = (el.style.display === 'none') ? 'block' : 'none';
+    }}
+    function copyToClipboard(id) {{
+      var el = document.getElementById(id);
+      if (!el) return;
+      // create a temporary textarea to copy full text (preserve newlines)
+      var ta = document.createElement('textarea');
+      ta.value = el.textContent;
+      document.body.appendChild(ta);
+      ta.select();
+      try {{
+        document.execCommand('copy');
+        // visual feedback
+        var old = el.style.backgroundColor;
+        el.style.backgroundColor = '#2b6cb0';
+        setTimeout(function() {{ el.style.backgroundColor = old; }}, 300);
+      }} catch (e) {{
+        alert('Copy failed: ' + e);
+      }}
+      document.body.removeChild(ta);
+    }}
+  </script>
 </body>
 </html>
 """
@@ -687,8 +775,21 @@ def scan_target(host: str, port: int, path: str, use_ssl: bool, concurrency: int
         name, raw = name_raw
         status, resp = send_raw(host, port, raw, use_ssl=use_ssl, timeout=timeout, proxy=proxy)
         if status != 0:
-            return {'template': name, 'error': resp.decode('utf-8', errors='replace'), 'resp_len': 0, 'resp_preview': '', 'suspected': False, 'reasons': [], 'severity': 'green'}
+            return {
+                'template': name,
+                'error': resp.decode('utf-8', errors='replace'),
+                'resp_len': 0,
+                'resp_preview': '',
+                'suspected': False,
+                'reasons': [],
+                'severity': 'green',
+                'request_sent': raw.decode('latin-1', errors='replace'),
+                'response_full': resp.decode('latin-1', errors='replace'),
+            }
         analysis = analyze_response(name, raw, resp, indicators, large_threshold)
+        # attach raw request + full response to result for HTML export / analysis
+        analysis['request_sent'] = raw.decode('latin-1', errors='replace')
+        analysis['response_full'] = resp.decode('latin-1', errors='replace')
         return analysis
 
     with ThreadPoolExecutor(max_workers=concurrency) as ex:
@@ -697,7 +798,17 @@ def scan_target(host: str, port: int, path: str, use_ssl: bool, concurrency: int
             try:
                 r = fut.result()
             except Exception as e:
-                r = {'template': futures[fut], 'error': str(e), 'resp_len': 0, 'resp_preview': '', 'suspected': False, 'reasons': [], 'severity': 'green'}
+                r = {
+                    'template': futures[fut],
+                    'error': str(e),
+                    'resp_len': 0,
+                    'resp_preview': '',
+                    'suspected': False,
+                    'reasons': [],
+                    'severity': 'green',
+                    'request_sent': '',
+                    'response_full': '',
+                }
             results.append(r)
 
     report = {
