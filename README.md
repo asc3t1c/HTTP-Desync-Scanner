@@ -58,6 +58,11 @@ Important flags:
 
 ## Examples
 
+nu11secur1ty:
+```bash
+echo AUTH > permission.txt && python http_desync_scanner.py --target your_domain.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --concurrency 2 --timeout 10
+```
+
 Dry-run (show templates only):
 ```bash
 python3 http_desync_scanner.py --target example.com --auth-file permission.txt --dry-run
