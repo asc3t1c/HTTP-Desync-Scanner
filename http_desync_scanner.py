@@ -660,7 +660,7 @@ def generate_html_report(report: Dict, html_path: str) -> None:
   <div class="card">
     <h2 style="margin:0 0 8px 0">HTTP Desync Scanner Report</h2>
     <div style="color:#556">Target: {html.escape(report.get('target',''))}:{report.get('port')} Path: {html.escape(report.get('path','/'))} Generated: {html.escape(time.ctime(report.get('timestamp', time.time())))}</div>
-    <div style="margin-top:10px">RED: {counts['red']} &nbsp; YELLOW: {counts['yellow']} &nbsp; GREEN: {counts['green']}</div>
+    <div style="margin-top:10px">RED=HIGH: {counts['red']} &nbsp; YELLOW=MEDIUM: {counts['yellow']} &nbsp; GREEN=LOW: {counts['green']}</div>
   </div>
   <div style="margin-top:18px">
     {''.join(rows)}
