@@ -193,12 +193,3 @@ A safe, typical command to run from your terminal (authorized test):
 ```bash
 echo AUTH > permission.txt && python3 http_desync_scanner.py --target example.com --port 80 --auth-file permission.txt --out desync_report.json --html desync_report.html --proxy 127.0.0.1:8080 --concurrency 2 --timeout 10
 ```
-
----
-
-If you’d like I can:
-- Add **per‑payload unique markers** (very high confidence detection) and update the usage doc to include how markers are shown in the output.  
-- Add an option to **save raw `.req` files** for each payload (easy Burp import).  
-- Implement an optional **control→test same-connection mode** (pipelined testing) to increase detection reliability.
-
-Which (if any) of those extras do you want me to add now?
